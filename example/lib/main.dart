@@ -10,6 +10,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dmrtd/dmrtd.dart';
+import 'package:dmrtd/src/proto/iso7816/bap_key.dart';
+
 import 'package:dmrtd/extensions.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
@@ -66,9 +68,9 @@ final Map<DgTag, String> dgTagToString = {
 
 Widget _makeMrtdAccessDataWidget(
     {required String header,
-      required String collapsedText,
-      required bool isPACE,
-      required bool isDBA}) {
+    required String collapsedText,
+    required bool isPACE,
+    required bool isDBA}) {
   return ExpandablePanel(
       theme: const ExpandableThemeData(
         headerAlignment: ExpandablePanelHeaderAlignment.center,
@@ -82,19 +84,18 @@ Widget _makeMrtdAccessDataWidget(
       expanded: Container(
           padding: const EdgeInsets.all(18),
           color: Color.fromARGB(255, 239, 239, 239),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Access protocol: ${isPACE ? "PACE" : "BAC"}',
-                  //style: TextStyle(fontSize: 16.0),
-                ),
-                SizedBox(height: 8.0),
-                Text(
-                  'Access key type: ${isDBA ? "DBA" : "CAN"}',
-                  //style: TextStyle(fontSize: 16.0),
-                )
-              ])));
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text(
+              'Access protocol: ${isPACE ? "PACE" : "BAC"}',
+              //style: TextStyle(fontSize: 16.0),
+            ),
+            SizedBox(height: 8.0),
+            Text(
+              'Access key type: ${isDBA ? "DBA" : "CAN"}',
+              //style: TextStyle(fontSize: 16.0),
+            )
+          ])));
 }
 
 String formatEfCom(final EfCOM efCom) {
@@ -288,49 +289,66 @@ class _MrtdHomePageState extends State<MrtdHomePage>
   }
 
   void _buttonPressed() async {
-      print("Button pressed");
-      //Check on what tab we are
-      if (_tabController.index == 0) {
-          //DBA tab
-          String errorText = "";
-          if (_doe.text.isEmpty) {
-            errorText += "Please enter date of expiry!\n";
-          }
-          if (_dob.text.isEmpty) {
-            errorText += "Please enter date of birth!\n";
-          }
-          if (_docNumber.text.isEmpty) {
-            errorText += "Please enter passport number!";
-          }
+    const mrz = "docnr";
 
-          setState(() {
-            _alertMessage = errorText;
-          });
-          //If there is an error, just jump out of the function
-          if (errorText.isNotEmpty) return;
+    // build BAP access key (KSeed = first 16 bytes)
+    final bapKey = BAPKey(mrz);
 
-          final bacKeySeed = DBAKey(_docNumber.text, _getDOBDate()!, _getDOEDate()!, paceMode: _checkBoxPACE);
-          _readMRTD(accessKey: bacKeySeed, isPace: _checkBoxPACE);
-      } else {
-        //PACE tab
-        String errorText = "";
-        if (_can.text.isEmpty) {
-            errorText = "Please enter CAN number!";
-        }
-        else if (_can.text.length != 6) {
-          errorText = "CAN number must be exactly 6 digits long!";
-        }
+    // run a minimal BAP session (no reads)
+    await _authBAP(accessKey: bapKey);
+  }
 
-        setState(() {
-          _alertMessage = errorText;
-        });
-        //If there is an error, just jump out of the function
-        if (errorText.isNotEmpty) return;
+  Future<void> _authBAP({required BAPKey accessKey}) async {
+    var iosMessage = "Done";
+    var iosIsError = false;
+    try {
+      setState(() {
+        _alertMessage = "Waiting for card …";
+        _isReading = true;
+        _mrtdData = null;
+      });
 
-        final canKeySeed = CanKey(_can.text);
-        _readMRTD(accessKey: canKeySeed, isPace: true);
+      await _nfc.connect(
+          iosAlertMessage: "Hold your phone near the driving licence");
+
+      final passport = Passport(_nfc);
+
+      // (Optional) show we’re about to authenticate
+      _nfc.setIosAlertMessage("Starting BAP (no reads)…");
+
+      // BAP/BAC share the same entry; we pass our BAPKey
+      await passport.startSession(accessKey);
+
+      // If we reached here, SM is established — SUCCESS.
+      iosMessage = "BAP OK — secure messaging established.";
+      _nfc.setIosAlertMessage(iosMessage);
+      setState(() {
+        _alertMessage = iosMessage;
+      });
+    } on Exception catch (e) {
+      final se = e.toString().toLowerCase();
+      var alert = "BAP authentication failed";
+      if (se.contains("security status not satisfied")) {
+        alert = "BAP failed: wrong MRZ seed (first 16 chars).";
+      } else if (se.contains('timeout')) {
+        alert = "Timeout while waiting for the card.";
+      } else if (se.contains("tag was lost")) {
+        alert = "Tag lost — try again.";
+      } else if (se.contains("invalidated by user")) {
+        alert = "";
       }
 
+      iosIsError = alert.isNotEmpty;
+      iosMessage = iosIsError ? alert : "Done";
+      setState(() => _alertMessage = alert);
+    } finally {
+      if (iosIsError) {
+        await _nfc.disconnect(iosErrorMessage: iosMessage);
+      } else {
+        await _nfc.disconnect(iosAlertMessage: iosMessage);
+      }
+      setState(() => _isReading = false);
+    }
   }
 
   void _readMRTD({required AccessKey accessKey, bool isPace = false}) async {
@@ -377,9 +395,11 @@ class _MrtdHomePageState extends State<MrtdHomePage>
         if (isPace) {
           //PACE session
           await passport.startSessionPACE(accessKey, mrtdData.cardAccess!);
+        } else if (accessKey is BacKey) {
+          //BAC/BAP session
+          await passport.startSession(accessKey);
         } else {
-          //BAC session
-          await passport.startSession(accessKey as DBAKey);
+          throw ArgumentError('BAC session requires a BAC-compatible key');
         }
 
         _nfc.setIosAlertMessage(formatProgressMsg("Reading EF.COM ...", 0));
@@ -390,69 +410,6 @@ class _MrtdHomePageState extends State<MrtdHomePage>
 
         if (mrtdData.com!.dgTags.contains(EfDG1.TAG)) {
           mrtdData.dg1 = await passport.readEfDG1();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG2.TAG)) {
-          mrtdData.dg2 = await passport.readEfDG2();
-        }
-
-        // To read DG3 and DG4 session has to be established with CVCA certificate (not supported).
-        // if(mrtdData.com!.dgTags.contains(EfDG3.TAG)) {
-        //   mrtdData.dg3 = await passport.readEfDG3();
-        // }
-
-        // if(mrtdData.com!.dgTags.contains(EfDG4.TAG)) {
-        //   mrtdData.dg4 = await passport.readEfDG4();
-        // }
-
-        if (mrtdData.com!.dgTags.contains(EfDG5.TAG)) {
-          mrtdData.dg5 = await passport.readEfDG5();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG6.TAG)) {
-          mrtdData.dg6 = await passport.readEfDG6();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG7.TAG)) {
-          mrtdData.dg7 = await passport.readEfDG7();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG8.TAG)) {
-          mrtdData.dg8 = await passport.readEfDG8();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG9.TAG)) {
-          mrtdData.dg9 = await passport.readEfDG9();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG10.TAG)) {
-          mrtdData.dg10 = await passport.readEfDG10();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG11.TAG)) {
-          mrtdData.dg11 = await passport.readEfDG11();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG12.TAG)) {
-          mrtdData.dg12 = await passport.readEfDG12();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG13.TAG)) {
-          mrtdData.dg13 = await passport.readEfDG13();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG14.TAG)) {
-          mrtdData.dg14 = await passport.readEfDG14();
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG15.TAG)) {
-          mrtdData.dg15 = await passport.readEfDG15();
-          _nfc.setIosAlertMessage(formatProgressMsg("Doing AA ...", 60));
-          mrtdData.aaSig = await passport.activeAuthenticate(Uint8List(8));
-        }
-
-        if (mrtdData.com!.dgTags.contains(EfDG16.TAG)) {
-          mrtdData.dg16 = await passport.readEfDG16();
         }
 
         _nfc.setIosAlertMessage(formatProgressMsg("Reading EF.SOD ...", 80));
@@ -506,167 +463,6 @@ class _MrtdHomePageState extends State<MrtdHomePage>
       }
     } on Exception catch (e) {
       _log.error("Read MRTD error: $e");
-    }
-  }
-
-  void _readMRTDOld() async {
-    try {
-      setState(() {
-        _mrtdData = null;
-        _alertMessage = "Waiting for Passport tag ...";
-        _isReading = true;
-      });
-
-      await _nfc.connect(
-          iosAlertMessage: "Hold your phone near Biometric Passport");
-      final passport = Passport(_nfc);
-
-      setState(() {
-        _alertMessage = "Reading Passport ...";
-      });
-
-      _nfc.setIosAlertMessage("Trying to read EF.CardAccess ...");
-      final mrtdData = MrtdData();
-
-      try {
-        mrtdData.cardAccess = await passport.readEfCardAccess();
-      } on PassportError {
-        //if (e.code != StatusWord.fileNotFound) rethrow;
-      }
-
-      _nfc.setIosAlertMessage("Trying to read EF.CardSecurity ...");
-
-      try {
-        mrtdData.cardSecurity = await passport.readEfCardSecurity();
-      } on PassportError {
-        //if (e.code != StatusWord.fileNotFound) rethrow;
-      }
-
-      _nfc.setIosAlertMessage("Initiating session ...");
-      final bacKeySeed =
-          DBAKey(_docNumber.text, _getDOBDate()!, _getDOEDate()!);
-      await passport.startSession(bacKeySeed);
-
-      _nfc.setIosAlertMessage(formatProgressMsg("Reading EF.COM ...", 0));
-      mrtdData.com = await passport.readEfCOM();
-
-      _nfc.setIosAlertMessage(formatProgressMsg("Reading Data Groups ...", 20));
-
-      if (mrtdData.com!.dgTags.contains(EfDG1.TAG)) {
-        mrtdData.dg1 = await passport.readEfDG1();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG2.TAG)) {
-        mrtdData.dg2 = await passport.readEfDG2();
-      }
-
-      // To read DG3 and DG4 session has to be established with CVCA certificate (not supported).
-      // if(mrtdData.com!.dgTags.contains(EfDG3.TAG)) {
-      //   mrtdData.dg3 = await passport.readEfDG3();
-      // }
-
-      // if(mrtdData.com!.dgTags.contains(EfDG4.TAG)) {
-      //   mrtdData.dg4 = await passport.readEfDG4();
-      // }
-
-      if (mrtdData.com!.dgTags.contains(EfDG5.TAG)) {
-        mrtdData.dg5 = await passport.readEfDG5();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG6.TAG)) {
-        mrtdData.dg6 = await passport.readEfDG6();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG7.TAG)) {
-        mrtdData.dg7 = await passport.readEfDG7();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG8.TAG)) {
-        mrtdData.dg8 = await passport.readEfDG8();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG9.TAG)) {
-        mrtdData.dg9 = await passport.readEfDG9();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG10.TAG)) {
-        mrtdData.dg10 = await passport.readEfDG10();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG11.TAG)) {
-        mrtdData.dg11 = await passport.readEfDG11();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG12.TAG)) {
-        mrtdData.dg12 = await passport.readEfDG12();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG13.TAG)) {
-        mrtdData.dg13 = await passport.readEfDG13();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG14.TAG)) {
-        mrtdData.dg14 = await passport.readEfDG14();
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG15.TAG)) {
-        mrtdData.dg15 = await passport.readEfDG15();
-        _nfc.setIosAlertMessage(formatProgressMsg("Doing AA ...", 60));
-        mrtdData.aaSig = await passport.activeAuthenticate(Uint8List(8));
-      }
-
-      if (mrtdData.com!.dgTags.contains(EfDG16.TAG)) {
-        mrtdData.dg16 = await passport.readEfDG16();
-      }
-
-      _nfc.setIosAlertMessage(formatProgressMsg("Reading EF.SOD ...", 80));
-      mrtdData.sod = await passport.readEfSOD();
-
-      setState(() {
-        _mrtdData = mrtdData;
-      });
-
-      setState(() {
-        _alertMessage = "";
-      });
-
-      _scrollController.animateTo(300.0,
-          duration: Duration(milliseconds: 500), curve: Curves.ease);
-    } on Exception catch (e) {
-      final se = e.toString().toLowerCase();
-      String alertMsg = "An error has occurred while reading Passport!";
-      if (e is PassportError) {
-        if (se.contains("security status not satisfied")) {
-          alertMsg =
-              "Failed to initiate session with passport.\nCheck input data!";
-        }
-        _log.error("PassportError: ${e.message}");
-      } else {
-        _log.error(
-            "An exception was encountered while trying to read Passport: $e");
-      }
-
-      if (se.contains('timeout')) {
-        alertMsg = "Timeout while waiting for Passport tag";
-      } else if (se.contains("tag was lost")) {
-        alertMsg = "Tag was lost. Please try again!";
-      } else if (se.contains("invalidated by user")) {
-        alertMsg = "";
-      }
-
-      setState(() {
-        _alertMessage = alertMsg;
-      });
-    } finally {
-      if (_alertMessage.isNotEmpty) {
-        await _nfc.disconnect(iosErrorMessage: _alertMessage);
-      } else {
-        await _nfc.disconnect(
-            iosAlertMessage: formatProgressMsg("Finished", 100));
-      }
-      setState(() {
-        _isReading = false;
-      });
     }
   }
 
@@ -890,8 +686,9 @@ class _MrtdHomePageState extends State<MrtdHomePage>
                             PlatformElevatedButton(
                               // btn Read MRTD
                               onPressed: _buttonPressed,
-                              child: PlatformText(
-                                  _isReading ? 'Reading ...' : 'Read Passport'),
+                              child: PlatformText(_isReading
+                                  ? 'Authenticating ...'
+                                  : 'Authenticate eDL'),
                             ),
                             SizedBox(height: 20),
                             Row(children: <Widget>[
@@ -946,17 +743,14 @@ class _MrtdHomePageState extends State<MrtdHomePage>
       ),
       Container(
           height: 350,
-          child: TabBarView(controller: _tabController,
-
-              children: <Widget>[
+          child: TabBarView(controller: _tabController, children: <Widget>[
             Card(
-          borderOnForeground: false,
+              borderOnForeground: false,
               elevation: 0,
               color: Colors.white,
               //shadowColor: Colors.white,
               margin: const EdgeInsets.all(16.0),
               child: Form(
-
                 key: _mrzData,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1056,47 +850,46 @@ class _MrtdHomePageState extends State<MrtdHomePage>
                         });
                       },
                     )
-
                   ],
-                 ),
+                ),
               ),
             ),
-                Card(
-                  borderOnForeground: false,
-                  elevation: 0,
-                  color: Colors.white,
-                  //shadowColor: Colors.white,
-                  margin: const EdgeInsets.all(16.0),
-                  child: Form(
-                    key: _canData,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        TextFormField(
-                          enabled: !_disabledInput(),
-                          controller: _can,
-                          decoration: const InputDecoration(
-                              border: OutlineInputBorder(),
-                              labelText: 'CAN number',
-                              fillColor: Colors.white),
-                          inputFormatters: <TextInputFormatter>[
-                            FilteringTextInputFormatter.allow(RegExp(r'[0-9]+')),
-                            LengthLimitingTextInputFormatter(6)
-                          ],
-                          textInputAction: TextInputAction.done,
-                          textCapitalization: TextCapitalization.characters,
-                          autofocus: true,
-                          validator: (value) {
-                            if (value?.isEmpty ?? false) {
-                              return 'Please enter CAN number';
-                            }
-                            return null;
-                          },
-                        ),
+            Card(
+              borderOnForeground: false,
+              elevation: 0,
+              color: Colors.white,
+              //shadowColor: Colors.white,
+              margin: const EdgeInsets.all(16.0),
+              child: Form(
+                key: _canData,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    TextFormField(
+                      enabled: !_disabledInput(),
+                      controller: _can,
+                      decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          labelText: 'CAN number',
+                          fillColor: Colors.white),
+                      inputFormatters: <TextInputFormatter>[
+                        FilteringTextInputFormatter.allow(RegExp(r'[0-9]+')),
+                        LengthLimitingTextInputFormatter(6)
                       ],
+                      textInputAction: TextInputAction.done,
+                      textCapitalization: TextCapitalization.characters,
+                      autofocus: true,
+                      validator: (value) {
+                        if (value?.isEmpty ?? false) {
+                          return 'Please enter CAN number';
+                        }
+                        return null;
+                      },
                     ),
-                  ),
-                )
+                  ],
+                ),
+              ),
+            )
           ]))
     ]);
   }
