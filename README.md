@@ -1,3 +1,8 @@
+# Note: 
+This fork is only for modifying a simple example app to read driver's licence as well as addition of eDL data groups and BAP. 
+A working version and publicly testable version will be introduced into https://github.com/privacybydesign/vcmrtd
+
+
 ## Dart library for ICAO Machine Readable Travel Documents standard - Biometric Passport
 [![LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg?style=for-the-badge)](LICENSE.LGPL)
 [![tests](https://img.shields.io/github/actions/workflow/status/ZeroPass/dmrtd/test.yml?label=Tests&branch=master&logo=github&style=for-the-badge)](https://github.com/ZeroPass/dmrtd/actions/workflows/test.yml)
