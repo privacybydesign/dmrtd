@@ -5,7 +5,7 @@ A working version and publicly testable version will be introduced into https://
 
 ## Dart library for ICAO Machine Readable Travel Documents standard - Biometric Passport
 [![LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg?style=for-the-badge)](LICENSE.LGPL)
-[![tests](https://img.shields.io/github/actions/workflow/status/ZeroPass/dmrtd/test.yml?label=Tests&branch=master&logo=github&style=for-the-badge)](https://github.com/ZeroPass/dmrtd/actions/workflows/test.yml)
+[![tests](https://img.shields.io/github/actions/workflow/status/privacybydesign/dmrtd/test.yml?label=Tests&branch=master&logo=github&style=for-the-badge)](https://github.com/privacybydesign/dmrtd/actions/workflows/test.yml)
 
 DMRTD is dart implementation of [ICAO 9303](https://www.icao.int/publications/pages/publication.aspx?docnum=9303) standard.
 Library provide APIs to send commands to and read data from MRTD.
