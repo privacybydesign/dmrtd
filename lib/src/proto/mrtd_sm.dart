@@ -3,7 +3,6 @@
 
 import 'dart:typed_data';
 
-import 'package:collection/collection.dart';
 import 'package:dmrtd/extensions.dart';
 import 'package:logging/logging.dart';
 import 'package:meta/meta.dart';
@@ -16,6 +15,7 @@ import 'iso7816/response_apdu.dart';
 import 'iso7816/sm.dart';
 import 'iso7816/smcipher.dart';
 import '../crypto/iso9797.dart';
+import '../crypto/crypto_utils.dart';
 import '../lds/tlv.dart';
 import '../crypto/aes.dart';
 import '../crypto/des.dart';
@@ -23,7 +23,6 @@ import '../crypto/des.dart';
 /// Class defines secure messaging protocol as specified in ICAO 9303 p11.
 class MrtdSM extends SecureMessaging {
   final _log = Logger("mrtd.sm");
-  static final bool Function(List<dynamic>, List<dynamic>) _eq  = const ListEquality().equals;
 
   SSC _ssc;
   set ssc(final SSC ssc) => _ssc = ssc;
@@ -89,7 +88,7 @@ class MrtdSM extends SecureMessaging {
     _log.verbose("  used SSC=${_ssc.toBytes().hex()}");
     _log.verbose("APDU CC=${do8E.value.hex()}");
     _log.verbose("Calculated CC=${CC.hex()}");
-    if(!_eq(CC, do8E.value)) {
+    if(!constantTimeEquals(CC, do8E.value)) {
       throw SMError("Invalid MAC of response APDU");
     }
 

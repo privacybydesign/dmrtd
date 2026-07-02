@@ -1,8 +1,8 @@
 //  Created by Nejc Skerjanc, copyright © 2023 ZeroPass. All rights reserved.
 import 'dart:typed_data';
 
-import 'package:collection/collection.dart';
 import 'package:dmrtd/extensions.dart';
+import 'package:dmrtd/src/crypto/crypto_utils.dart';
 import 'package:dmrtd/src/lds/asn1ObjectIdentifiers.dart';
 import 'package:dmrtd/src/proto/public_key_pace.dart';
 import 'package:dmrtd/src/crypto/kdf.dart';
@@ -581,7 +581,11 @@ class PACE {
       if (cipherAlgo == CipherAlgorithm.AES){
         _log.debug("PACE.decryptNonce; Cipher algorithm: AES");
         AESCipher aesCipher128 = AESChiperSelector.getChiper(size: KEY_LENGTH.s128);
-        Uint8List decryptedNonce = aesCipher128.decrypt(data: nonce, key: k_pi);
+        // ICAO 9303 p11: the encrypted nonce is decrypted in CBC mode with an
+        // all-zero IV. Pass it explicitly (the DESede branch below does the
+        // same) now that CBC no longer defaults to a zero IV silently.
+        Uint8List decryptedNonce = aesCipher128.decrypt(
+            data: nonce, key: k_pi, iv: Uint8List(AES_BLOCK_SIZE));
         _log.sdVerbose("PACE.decryptNonce; Decrypted nonce: ${decryptedNonce.hex()}");
         return decryptedNonce;
       }
@@ -739,7 +743,7 @@ class PACE {
         _log.sdVerbose("Received auth token from ICC: ${computedAuthTokenICC.hex()}"
                        ", Computed auth token: ${inputTokenTerminalforCheck.hex()}");
 
-        if (!inputTokenTerminalforCheck.equals(computedAuthTokenICC)){
+        if (!constantTimeEquals(inputTokenTerminalforCheck, computedAuthTokenICC)){
           _log.error("PACE(4); Auth token from ICC and terminal are not the same");
           throw PACEError("PACE(4); Auth token from ICC and terminal are not the same");
         }
@@ -910,7 +914,7 @@ class PACE {
         _log.sdVerbose("Received auth token from ICC: ${computedAuthTokenICC.hex()}"
             ", Computed auth token: ${inputTokenTerminalforCheck.hex()}");
 
-        if (!inputTokenTerminalforCheck.equals(computedAuthTokenICC)){
+        if (!constantTimeEquals(inputTokenTerminalforCheck, computedAuthTokenICC)){
           _log.error("PACE(4); Auth token from ICC and terminal are not the same");
           throw PACEError("PACE(4); Auth token from ICC and terminal are not the same");
         }
