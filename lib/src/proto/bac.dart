@@ -93,7 +93,7 @@ class BAC {
     // Decrypt R from received Eicc
     _log.debug("Generating session keys KSenc and KSmac");
     final R = D(Kdec: Kenc, Eicc: pairEiccMicc.first);
-    _log.verbose("Decrypted R=${R.hex()}");
+    _log.sdVerbose("Decrypted R=${R.hex()}");
 
     // Verify R contains our RND.IFD and extract Kicc from R
     final Kicc = verifyRNDifdAndExtractKicc(RNDifd: RNDifd, R: R);
